@@ -1,4 +1,5 @@
 import os
+from dotenv import load_dotenv
 import networkx as nx
 import re
 import json
