@@ -32,4 +32,4 @@ RUN chmod +x entrypoint.sh
 EXPOSE 8000
 
 # Command to run the application
-CMD ["./entrypoint.sh"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "$PORT"]
