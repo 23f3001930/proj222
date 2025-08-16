@@ -1,5 +1,4 @@
 import os
-from dotenv import load_dotenv
 import networkx as nx
 import re
 import json
@@ -564,29 +563,7 @@ def run_agent_safely(llm_input: str) -> Dict:
         return {"error": str(e)}
 
 
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse, FileResponse, Response
-import pandas as pd
-import tempfile, json, re, base64, os
-import concurrent.futures
-from typing import Dict
-
-app = FastAPI()
-
-# 1×1 transparent PNG fallback (if favicon.ico file not present)
-_FAVICON_FALLBACK_PNG = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO3n+9QAAAAASUVORK5CYII="
-)
-
-@app.get("/favicon.ico")
-async def favicon():
-    """
-    Serve favicon if available, else transparent fallback PNG.
-    """
-    if os.path.exists("favicon.ico"):
-        return FileResponse("favicon.ico", media_type="image/x-icon")
-    return Response(content=_FAVICON_FALLBACK_PNG, media_type="image/png")
-
+from fastapi import Request
 
 @app.post("/api")
 async def analyze_data(request: Request):
@@ -630,16 +607,16 @@ async def analyze_data(request: Request):
                     df = pd.read_json(BytesIO(content))
                 except ValueError:
                     df = pd.DataFrame(json.loads(content.decode("utf-8")))
-            elif filename.endswith((".png", ".jpg", ".jpeg")):
+            elif filename.endswith(".png") or filename.endswith(".jpg") or filename.endswith(".jpeg"):
                 try:
                     if PIL_AVAILABLE:
                         image = Image.open(BytesIO(content))
-                        image = image.convert("RGB")
+                        image = image.convert("RGB")  # ensure RGB format
                         df = pd.DataFrame({"image": [image]})
                     else:
                         raise HTTPException(400, "PIL not available for image processing")
                 except Exception as e:
-                    raise HTTPException(400, f"Image processing failed: {str(e)}")
+                    raise HTTPException(400, f"Image processing failed: {str(e)}")  
             else:
                 raise HTTPException(400, f"Unsupported data file type: {filename}")
 
@@ -663,8 +640,8 @@ async def analyze_data(request: Request):
                 "2) DO NOT call scrape_url_to_dataframe() or fetch any external data.\n"
                 "3) Use only the uploaded dataset for answering questions.\n"
                 "4) Produce a final JSON object with keys:\n"
-                '   - \"questions\": [ ... original question strings ... ]\n'
-                '   - \"code\": \"...\"  (Python code that fills `results` with exact question strings as keys)\n'
+                '   - "questions": [ ... original question strings ... ]\n'
+                '   - "code": "..."  (Python code that fills `results` with exact question strings as keys)\n'
                 "5) For plots: use plot_to_base64() helper to return base64 image data under 100kB.\n"
             )
         else:
@@ -672,8 +649,8 @@ async def analyze_data(request: Request):
                 "Rules:\n"
                 "1) If you need web data, CALL scrape_url_to_dataframe(url).\n"
                 "2) Produce a final JSON object with keys:\n"
-                '   - \"questions\": [ ... original question strings ... ]\n'
-                '   - \"code\": \"...\"  (Python code that fills `results` with exact question strings as keys)\n'
+                '   - "questions": [ ... original question strings ... ]\n'
+                '   - "code": "..."  (Python code that fills `results` with exact question strings as keys)\n'
                 "3) For plots: use plot_to_base64() helper to return base64 image data under 100kB.\n"
             )
 
@@ -684,6 +661,7 @@ async def analyze_data(request: Request):
         )
 
         # Run agent
+        import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor() as ex:
             fut = ex.submit(run_agent_safely_unified, llm_input, pickle_path)
             try:
@@ -704,6 +682,7 @@ async def analyze_data(request: Request):
                     try:
                         val = result[q]
                         if isinstance(val, str) and val.startswith("data:image/"):
+                            # Remove data URI prefix
                             val = val.split(",", 1)[1] if "," in val else val
                         mapped[key] = caster(val) if val not in (None, "") else val
                     except Exception:
@@ -717,56 +696,6 @@ async def analyze_data(request: Request):
     except Exception as e:
         logger.exception("analyze_data failed")
         raise HTTPException(500, detail=str(e))
-
-
-def run_agent_safely_unified(llm_input: str, pickle_path: str = None) -> Dict:
-    """
-    Runs the LLM agent and executes code.
-    """
-    try:
-        max_retries = 3
-        raw_out = ""
-        for attempt in range(1, max_retries + 1):
-            response = agent_executor.invoke({"input": llm_input}, {"timeout": LLM_TIMEOUT_SECONDS})
-            raw_out = response.get("output") or response.get("final_output") or response.get("text") or ""
-            if raw_out:
-                break
-        if not raw_out:
-            return {"error": f"Agent returned no output after {max_retries} attempts"}
-
-        parsed = clean_llm_output(raw_out)
-        if "error" in parsed:
-            return parsed
-
-        if "code" not in parsed or "questions" not in parsed:
-            return {"error": f"Invalid agent response: {parsed}"}
-
-        code = parsed["code"]
-        questions = parsed["questions"]
-
-        if pickle_path is None:
-            urls = re.findall(r"scrape_url_to_dataframe\\(\\s*['\"](.*?)['\"]\\s*\\)", code)
-            if urls:
-                url = urls[0]
-                tool_resp = scrape_url_to_dataframe(url)
-                if tool_resp.get("status") != "success":
-                    return {"error": f"Scrape tool failed: {tool_resp.get('message')}"}
-                df = pd.DataFrame(tool_resp["data"])
-                temp_pkl = tempfile.NamedTemporaryFile(suffix=".pkl", delete=False)
-                temp_pkl.close()
-                df.to_pickle(temp_pkl.name)
-                pickle_path = temp_pkl.name
-
-        exec_result = write_and_run_temp_python(code, injected_pickle=pickle_path, timeout=LLM_TIMEOUT_SECONDS)
-        if exec_result.get("status") != "success":
-            return {"error": f"Execution failed: {exec_result.get('message')}", "raw": exec_result.get("raw")}
-
-        results_dict = exec_result.get("result", {})
-        return {q: results_dict.get(q, "Answer not found") for q in questions}
-
-    except Exception as e:
-        logger.exception("run_agent_safely_unified failed")
-        return {"error": str(e)}
 
 
 def run_agent_safely_unified(llm_input: str, pickle_path: str = None) -> Dict:
