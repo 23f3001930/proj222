@@ -1118,7 +1118,7 @@ if __name__ == "__main__":
     import uvicorn
     import os
     uvicorn.run(
-        "app:app",  # replace with your app name if different
+        app,  # replace with your app name if different
         host="0.0.0.0",
         port=int(os.getenv("PORT", 8000))
     )
